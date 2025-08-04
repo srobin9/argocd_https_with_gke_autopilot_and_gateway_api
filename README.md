@@ -61,7 +61,7 @@ Autopilot은 노드 관리를 Google에 위임하여 인프라 걱정 없이 애
         --release-channel=regular \
         --cluster-version=latest
     ```    
-    *   생성에는 몇 분 정도 소요될 수 있습니다.
+    > 생성에는 몇 분 정도 소요될 수 있습니다.
 
 2.  **클러스터 인증 정보 가져오기:**
     `kubectl`이 클러스터와 통신할 수 있도록 인증 정보를 가져옵니다.

@@ -100,6 +100,17 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
         --namespace argocd
     ```
 
+5.  ⭐ **핵심 설정: Health Check를 위한 Insecure 설정 강제 적용**
+    Helm 차트의 기본값으로 인해 `server.insecure` 설정이 `false`로 유지될 수 있습니다. 이를 해결하기 위해, 설치 후 직접 `ConfigMap`을 수정하고 Pod를 재시작하여 설정을 확실하게 적용합니다.
+
+    ```bash
+    # 1. ConfigMap에 server.insecure: 'true' 데이터를 패치(추가/수정)합니다.
+    kubectl patch configmap argocd-cmd-params-cm -n argocd -p '{"data":{"server.insecure":"true"}}'
+
+    # 2. 변경된 ConfigMap을 적용하기 위해 Deployment를 재시작합니다.
+    kubectl rollout restart deployment argo-cd-argocd-server -n argocd
+    ```
+
 ### 3단계: Gateway API를 이용한 HTTPS 설정
 
 이제 Gateway API를 사용하여 외부에서 Argo CD UI로 안전하게 접속할 수 있는 HTTPS 엔드포인트를 만듭니다.
@@ -108,8 +119,7 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
     로드밸런서에 사용할 고정 IP 주소를 예약합니다.
 
     ```bash
-    gcloud compute addresses create argocd-gateway-ip \
-        --global
+    gcloud compute addresses create argocd-gateway-ip --global
     ```
 
 2.  **예약된 IP 주소 확인:**
@@ -121,23 +131,32 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
     ```
     > **DNS 설정:** 출력된 IP 주소를 복사하여 사용 중인 DNS 서비스에서 `argocd.mydomain.com`과 같은 원하는 도메인에 **A 레코드**로 등록하세요. DNS 전파에는 시간이 걸릴 수 있습니다.
 
-3.  **TLS 인증서 생성 및 Secret 저장:**
-    테스트를 위해 자체 서명 인증서를 생성합니다. (프로덕션 환경에서는 Let's Encrypt 등 신뢰할 수 있는 인증서를 사용하세요.)
+3.  ⭐ **핵심 설정: 로컬 머신 DNS 설정 (`/etc/hosts`)**
+    `argocd.mydomain.com`은 실제 DNS에 등록된 도메인이 아니므로, 테스트를 위해 로컬 컴퓨터가 이 도메인을 GKE Gateway의 IP 주소로 인식하도록 `/etc/hosts` 파일을 수정해야 합니다. 관리자 권한이 필요합니다.
 
+    *   **macOS / Linux:** `sudo nano /etc/hosts`
+    *   **Windows:** 관리자 권한으로 메모장을 열고 `C:\Windows\System32\drivers\etc\hosts` 파일 열기
+
+    파일의 맨 아래에 아래 형식의 줄을 추가하고 저장합니다.
+    ```
+    # 예시: 34.54.162.112 argocd.mydomain.com
+    ${GATEWAY_IP} argocd.mydomain.com
+    ```
+    **설정 확인:** 터미널에서 `ping argocd.mydomain.com`을 실행했을 때, 위에서 받은 IP 주소로 응답이 오는지 확인합니다.
+
+4.  **TLS 인증서 생성 및 Secret 저장 (⭐ 핵심 설정 3):**
+    Google Cloud Load Balancer가 지원하는 **RSA 2048비트** 키로 인증서를 생성합니다.
     ```bash
-    # 자체 서명 인증서와 키 생성
-    openssl req -x509 -newkey rsa:4096 -nodes \
+    # RSA 2048비트 인증서와 키 생성
+    openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout tls.key -out tls.crt -sha256 \
       -days 365 -subj "/CN=argocd.mydomain.com"
 
-    # Kubernetes Secret으로 저장
-    kubectl create secret tls argocd-tls-cert -n argocd \
-      --cert=tls.crt \
-      --key=tls.key
+    kubectl create secret tls argocd-tls-cert -n argocd --cert=tls.crt --key=tls.key
     ```
-    *   `argocd.mydomain.com`을 실제 사용하는 도메인으로 변경하세요.
+    > `argocd.mydomain.com`을 실제 사용하는 도메인으로 변경하세요.
 
-4.  **Gateway 리소스 배포:**
+5.  **Gateway 리소스 배포:**
     아래 내용을 `gateway.yaml` 파일로 저장합니다. 이 리소스는 Google Cloud Load Balancer를 생성하고, 443 포트로 들어오는 HTTPS 트래픽을 처리하며, 방금 생성한 TLS 인증서를 사용하도록 설정합니다.
 
     ```yaml
@@ -162,7 +181,7 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
           - name: argocd-tls-cert # 3단계에서 생성한 Secret 이름
     ```
 
-5.  **HTTPRoute 리소스 배포:**
+6.  **HTTPRoute 리소스 배포:**
     아래 내용을 `httproute.yaml` 파일로 저장합니다. `Gateway`로 들어온 특정 호스트 이름(`argocd.mydomain.com`)의 트래픽을 내부 `argo-cd-argocd-server` 서비스로 전달하는 라우팅 규칙입니다.
 
     ```yaml
@@ -183,7 +202,7 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
           port: 80 # Service의 포트
     ```
 
-6.  **HealthCheckPolicy 리소스 배포 (⭐ 핵심 설정):**
+7.  **HealthCheckPolicy 리소스 배포 (⭐ 핵심 설정):**
     아래 내용을 `healthcheck.yaml` 파일로 저장합니다. 이것이 바로 로드밸런서가 Argo CD Pod의 상태를 **정확하게** 확인할 수 있도록 하는 핵심 설정입니다.
 
     *   `type: HTTP`: Pod가 HTTPS로 리디렉션하지 않으므로 일반 HTTP로 검사합니다.
@@ -210,7 +229,7 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
         name: argo-cd-argocd-server
     ```
 
-7.  **모든 리소스 적용:**
+8.  **모든 리소스 적용:**
     ```bash
     kubectl apply -f gateway.yaml
     kubectl apply -f httproute.yaml
@@ -263,46 +282,34 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
 
 ### 5단계: 문제 해결 (Troubleshooting)
 
-이 섹션은 우리가 함께 겪었던 문제들을 중심으로, 유사한 상황 발생 시 해결할 수 있는 방법을 안내합니다.
+#### 증상 1: 브라우저에 `net::ERR_CERT_AUTHORITY_INVALID` 오류 발생
 
-#### 증상 1: `curl -kv https://argocd.mydomain.com`이 `503 Service Unavailable` 또는 `no healthy upstream` 오류를 반환합니다.
+*   **원인:** 우리가 직접 만든 **자체 서명 인증서**를 사용했기 때문에 발생하는 정상적인 보안 경고입니다.
+*   **해결:** 화면에서 **"Advanced"** 버튼을 누르고 **"Proceed to argocd.mydomain.com (unsafe)"** 링크를 클릭하여 접속합니다.
 
-이는 **로드밸런서의 Health Check가 실패**했음을 의미합니다.
+#### 증상 2: 일반 브라우저 탭에서는 "Proceed to..." 링크 없이 접속이 완전히 차단됩니다.
 
-*   **원인 A: Argo CD 서버의 HTTPS 리디렉션**
-    *   **진단:** `kubectl run`으로 테스트 Pod를 띄워 `curl http://<ARGO_CD_POD_IP>:8080/healthz` 실행 시 `307 Temporary Redirect`가 반환됩니다.
-    *   **해결:** **2단계**에서 설명한 대로, `argocd-cmd-params-cm` ConfigMap에 `server.insecure: 'true'`를 설정하고 Pod를 재시작하세요.
-        ```bash
-        kubectl patch configmap argocd-cmd-params-cm -n argocd -p '{"data":{"server.insecure":"true"}}'
-        kubectl rollout restart deployment argo-cd-argocd-server -n argocd
-        ```
+*   **원인:** 브라우저에 **HSTS 정책**이 캐시되어, 신뢰할 수 없는 인증서를 사용하는 사이트의 예외를 허용하지 않기 때문입니다.
+*   **해결:** Chrome 주소창에 `chrome://net-internals/#hsts`를 입력 후, **"Delete domain security policies"** 섹션에서 해당 도메인을 삭제하고 브라우저를 재시작합니다.
 
-*   **원인 B: 잘못된 HealthCheckPolicy 설정**
-    *   **진단:** Health Check 정책의 타입이나 포트가 잘못되었습니다.
-    *   **해결:** **3단계**의 `healthcheck.yaml` 파일 내용이 올바른지 (`type: HTTP`, `port: 8080`) 다시 한번 확인하고 적용하세요.
+#### 증상 3: `503 Service Unavailable` 오류가 발생하며, 확인 결과 `server.insecure` 설정이 `false`로 되어 있습니다.
 
-*   **원인 C: NetworkPolicy에 의한 차단**
-    *   **진단:** 클러스터에 기본 차단(deny-all) `NetworkPolicy`가 적용된 경우, Health Checker의 IP 대역이 차단될 수 있습니다. `curl`이 응답 없이 멈추는 현상으로 나타날 수 있습니다.
-    *   **해결:** Google Cloud Health Checker IP 대역(`130.211.0.0/22`, `35.191.0.0/16`)을 허용하는 `NetworkPolicy`를 `argocd` 네임스페이스에 추가하세요.
-        ```yaml
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-gclb-health-checks
-          namespace: argocd
-        spec:
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: argocd-server
-          ingress:
-          - from:
-            - ipBlock: { cidr: "130.211.0.0/22" }
-            - ipBlock: { cidr: "35.191.0.0/16" }
-            ports:
-            - protocol: TCP
-              port: 8080
-        ```
+*   **원인:** Helm 차트의 기본값이 설치 시 전달한 인수를 덮어썼거나, 다른 Helm 업그레이드 과정에서 설정이 초기화되었을 수 있습니다. 이로 인해 Health Check가 실패합니다.
+*   **해결:** **2단계의 "핵심 설정 1"** 부분을 다시 실행하세요. `kubectl patch` 명령으로 ConfigMap을 직접 수정한 뒤, `kubectl rollout restart`로 Pod를 재시작하여 설정을 확실하게 적용하는 것이 가장 안정적인 방법입니다.
 
-#### 증상 2: Google Cloud Console의 `부하 분산 > 백엔드 서비스`에서 백엔드가 `UNHEALTHY`로 표시됩니다.
+#### 증상 4: Gateway 이벤트에 `The SSL key size is unsupported` 오류가 표시됩니다.
 
-이것은 **증상 1**의 근본 원인입니다. 위에서 설명한 Health Check 실패 원인들을 순서대로 점검하면 해결됩니다. 콘솔의 상태가 `HEALTHY`로 바뀔 때까지 1~2분 정도 기다려야 합니다.
+*   **원인:** Google Cloud Load Balancer는 **RSA 2048비트** 키만 지원하는데, 다른 크기(예: RSA 4096)의 키로 인증서를 생성했기 때문입니다.
+*   **해결:** **3단계의 "핵심 설정 3"**을 다시 확인하세요. `openssl` 명령어가 `rsa:2048`로 되어 있는지 확인하고, 잘못된 Secret을 삭제한 후 올바른 크기의 키로 Secret을 다시 생성합니다.
+
+#### 증상 5: 로컬 PC에서 도메인으로 접속이 안 되거나, `ping`이 실패합니다.
+
+*   **원인:** 가상의 도메인 이름을 사용하고 있기 때문에, 로컬 컴퓨터가 이 도메인에 해당하는 IP 주소를 알지 못합니다.
+*   **해결:** **3단계의 "핵심 설정 2"**를 확인하세요. `/etc/hosts` 파일에 GKE Gateway의 IP 주소와 도메인 이름이 정확하게 입력되었는지 확인합니다. (관리자 권한으로 수정해야 합니다.)
+
+#### 증상 6: `curl http://...` 또는 `curl argocd.mydomain.com` 실행 시 `Connection reset by peer` 오류가 발생합니다.
+
+*   **원인:** Gateway가 HTTP(80) 포트를 리스닝하도록 설정되어 있지 않은 상태에서 HTTP로 접속을 시도했기 때문입니다.
+*   **해결:**
+    *   **빠른 확인:** `https://`를 명시하여 `curl -kv https://argocd.mydomain.com`으로 접속합니다.
+    *   **영구적인 해결책:** 사용자의 편의를 위해 HTTP에서 HTTPS로 자동 리디렉션을 설정하는 것이 좋습니다. (이전 답변의 리디렉션용 Gateway 및 HTTPRoute 설정 참고)

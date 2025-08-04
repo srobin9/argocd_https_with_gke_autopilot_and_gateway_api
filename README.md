@@ -1,4 +1,4 @@
-### GKE Autopilot에서 Gateway API와 Helm을 이용한 Argo CD HTTPS 설정 완벽 가이드
+### GKE Autopilot에서 Gateway API와 Helm을 이용한 Argo CD HTTPS 설정 가이드
 
 이 가이드는 GKE Autopilot 클러스터에 Argo CD와 Argo Rollouts를 설치하고, Kubernetes Gateway API를 사용하여 안전한 HTTPS 엔드포인트를 설정하는 전체 과정을 안내합니다.
 

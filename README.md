@@ -35,7 +35,6 @@
     ```bash
     gcloud services enable \
         container.googleapis.com \
-        gateway.googleapis.com \
         compute.googleapis.com \
         --project=${PROJECT_ID}
     ```

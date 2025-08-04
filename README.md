@@ -1,9 +1,48 @@
-### GKE Autopilot에서 Gateway API와 Helm을 이용한 Argo CD HTTPS 설정 가이드
+### GKE Autopilot에서 Gateway API와 Helm을 이용한 Argo CD HTTPS 설정 완벽 가이드
 
 이 가이드는 GKE Autopilot 클러스터에 Argo CD와 Argo Rollouts를 설치하고, Kubernetes Gateway API를 사용하여 안전한 HTTPS 엔드포인트를 설정하는 전체 과정을 안내합니다.
 
+#### 0단계: Google Cloud 환경 설정 및 초기화
+
+가이드를 시작하기 전에, Google Cloud 프로젝트와 로컬 개발 환경을 설정하고 필요한 모든 서비스를 활성화합니다.
+
+1.  **Google Cloud SDK 설치 및 초기화:**
+    로컬 머신에 `gcloud` CLI가 설치되어 있지 않다면 [공식 문서](https://cloud.google.com/sdk/docs/install)를 따라 설치합니다. 이미 설치되어 있다면 최신 버전으로 업데이트합니다.
+
+    ```bash
+    gcloud components update
+    ```
+
+    `gcloud`를 처음 사용하는 경우, 계정 인증 및 프로젝트 설정을 위해 초기화를 진행합니다.
+
+    ```bash
+    gcloud init
+    ```
+    > 화면의 안내에 따라 로그인하고, 이 가이드에서 사용할 Google Cloud 프로젝트를 선택하세요.
+
+2.  **환경 변수 설정:**
+    반복적인 입력을 줄이고 실수를 방지하기 위해, 프로젝트 ID와 리전 정보를 환경 변수로 설정합니다.
+
+    ```bash
+    export PROJECT_ID=$(gcloud config get-value project)
+    export REGION="asia-northeast3" # 서울 리전
+    ```
+    터미널 세션이 종료되면 이 변수들은 사라지므로, 새 터미널을 열 때마다 다시 실행해주세요.
+
+3.  **필수 API 활성화:**
+    GKE, Gateway API, Compute Engine(로드밸런서와 IP 주소용) API를 활성화합니다. API를 활성화하는 데 몇 분 정도 소요될 수 있습니다.
+
+    ```bash
+    gcloud services enable \
+        container.googleapis.com \
+        gateway.googleapis.com \
+        compute.googleapis.com \
+        --project=${PROJECT_ID}
+    ```
+    이 명령은 필요한 모든 서비스를 한 번에 활성화하여, 이후 단계에서 권한 오류가 발생하는 것을 방지합니다.
+
 #### 사전 준비 사항
-*   Google Cloud 계정 및 프로젝트
+*   Google Cloud 계정 및 프로젝트 (위 단계에서 설정 완료)
 *   로컬 머신에 `gcloud` CLI, `kubectl`, `helm`이 설치 및 구성되어 있어야 합니다.
 *   HTTPS 접속에 사용할 도메인 이름을 소유하고 있어야 합니다. (예: `argocd.mydomain.com`)
 
@@ -18,18 +57,16 @@ Autopilot은 노드 관리를 Google에 위임하여 인프라 걱정 없이 애
 
     ```bash
     gcloud container clusters create-auto argocd-cluster \
-        --project=<YOUR_PROJECT_ID> \
-        --region=asia-northeast3 \
+        --project=${PROJECT_ID} \
+        --region=${REGION} \
         --cluster-version=latest
-    ```
-    *   `<YOUR_PROJECT_ID>`를 실제 Google Cloud 프로젝트 ID로 변경하세요.
-    *   생성에는 몇 분 정도 소요될 수 있습니다.
+    ```    *   생성에는 몇 분 정도 소요될 수 있습니다.
 
 2.  **클러스터 인증 정보 가져오기:**
     `kubectl`이 클러스터와 통신할 수 있도록 인증 정보를 가져옵니다.
 
     ```bash
-    gcloud container clusters get-credentials argocd-cluster --region asia-northeast3
+    gcloud container clusters get-credentials argocd-cluster --region=${REGION}
     ```
 
 ### 2단계: Argo CD 및 Argo Rollouts 설치
@@ -78,9 +115,10 @@ Helm을 사용하여 Argo CD와 Argo Rollouts를 설치합니다. 이때, 저희
     예약된 IP 주소를 확인하고, 이 주소를 DNS에 등록해야 합니다.
 
     ```bash
-    gcloud compute addresses describe argocd-gateway-ip --global --format="value(address)"
+    export GATEWAY_IP=$(gcloud compute addresses describe argocd-gateway-ip --global --format="value(address)")
+    echo "예약된 IP 주소: ${GATEWAY_IP}"
     ```
-    > **DNS 설정:** 출력된 IP 주소를 복사하여 사용 중인 DNS 서비스에서 `argocd.mydomain.com`과 같은 원하는 도메인에 **A 레코드**로 등록하세요.
+    > **DNS 설정:** 출력된 IP 주소를 복사하여 사용 중인 DNS 서비스에서 `argocd.mydomain.com`과 같은 원하는 도메인에 **A 레코드**로 등록하세요. DNS 전파에는 시간이 걸릴 수 있습니다.
 
 3.  **TLS 인증서 생성 및 Secret 저장:**
     테스트를 위해 자체 서명 인증서를 생성합니다. (프로덕션 환경에서는 Let's Encrypt 등 신뢰할 수 있는 인증서를 사용하세요.)
